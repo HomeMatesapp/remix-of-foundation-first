@@ -1,0 +1,75 @@
+-- CLEAR ROUTES — INCREMENT 17 / STAGE D8 (R1 RECONCILIATION)
+-- DIACRITIC-REMOVAL MECHANISM BLOCKER ARTIFACT. NOT APPLIED. NOT APPLICABLE.
+--
+-- This file replaces the Stage D8 authored "immutable wrapper proof" source.
+-- The original source is preserved verbatim, as historical evidence only, at
+--   supabase/authored-migrations/superseded/
+--     20260901090000_stage-d8-unaccent-immutable-wrapper-proof.SUPERSEDED-R1.sql.txt
+-- It carries a `.sql.txt` extension precisely so it can never be promoted into
+-- the managed migration directory by accident.
+--
+-- STATUS: BLOCKED — the accent-removal wrapper design is NOT PROVEN.
+-- The product owner approved `unaccent` CONDITIONALLY: only if a genuinely
+-- deterministic immutable wrapper is designed and PROVEN before
+-- normalise_title() uses it. That condition is NOT satisfied. Nothing may be
+-- installed, created or applied on that basis.
+--
+-- WHY THE EARLIER PROOF FAILED (external inspection, R1)
+--   1. FALSE UPSTREAM VOLATILITY CLAIM. The earlier source asserted that the
+--      dictionary-explicit two-argument form of the accent-removal function is
+--      declared IMMUTABLE upstream. It is not. The official contrib install
+--      script (contrib/unaccent/unaccent--1.1.sql) declares BOTH overloads
+--      -- unaccent(regdictionary, text) and unaccent(text) -- as
+--      LANGUAGE C STABLE STRICT PARALLEL SAFE. The correct upstream expectation
+--      for BOTH overloads is STABLE. A wrapper declared IMMUTABLE over a STABLE
+--      call is an unproven re-declaration, not a proof.
+--   2. CIRCULAR PROOF LOGIC. The earlier source built a scratch relation with a
+--      stored generated column over the wrapper and treated a successful CREATE
+--      as server-enforced evidence of immutability. It is not. The generated
+--      column restriction checks the DECLARED volatility contract of the
+--      function named in the generation expression. Since the wrapper had
+--      already been declared IMMUTABLE, acceptance was guaranteed by the
+--      declaration itself and proves nothing about the semantics of the
+--      underlying STABLE call.
+--   3. DICTIONARY IDENTITY IS NOT DICTIONARY CONTENT. Pinning
+--      'extensions.unaccent'::regdictionary freezes which dictionary is
+--      selected. It does not freeze the dictionary's RULES CONTENT, which is
+--      external server-side data backed by rules files and alterable through
+--      dictionary configuration. Under the owner's condition that residual
+--      mutability cannot be waved away: it is exactly the property a stored
+--      generated column would silently depend on.
+--
+-- CONSEQUENCE, STATED PLAINLY
+--   No IMMUTABLE accent-removal wrapper is authored here, and none is retained
+--   as an accepted design. This file installs nothing, creates nothing and
+--   changes nothing. It fails closed unconditionally, BEFORE any extension
+--   establishment and BEFORE any wrapper creation, so that it cannot be
+--   promoted into the managed migration directory and executed as if the
+--   blocked question had been answered.
+--
+-- WHAT REMAINS TRUE AND USEFUL (kept as a property, not as a proof)
+--   * A single narrow accent-removal entry point remains the right shape.
+--   * Freezing the dictionary identity, schema-qualified, remains a useful
+--     determinism property.
+--   * A function-local resolution path remains the right way to avoid ambient
+--     path dependence.
+--   None of these, alone or together, establish semantic immutability.
+--
+-- DELIBERATELY NOT AUTHORED HERE OR ANYWHERE YET
+--   normalise_title(), occupation, programme, opportunity, local_snapshot_item.
+--   No generated column on any real table. No participant data, no postcode, no
+--   participant location, no PostGIS change, no row level security change, no
+--   privilege or role change, no external API, no AI, no morphology and no
+--   invented character or transliteration mapping.
+--
+-- NEXT DECISION (owner/technical, NOT taken here)
+--   How diacritic removal is to be satisfied at all, now that `unaccent`
+--   cannot meet the approved generated-column immutability condition as
+--   currently constrained. This artifact deliberately selects NO replacement
+--   mechanism.
+
+DO $d8_r1_blocker$
+BEGIN
+  RAISE EXCEPTION 'MIGRATION BLOCKER: Stage D8 accent-removal wrapper is NOT PROVEN. Upstream declares both unaccent overloads STABLE, the generated-column scratch check was circular, and dictionary rules content remains external mutable data. The owner condition (a genuinely deterministic immutable wrapper proven BEFORE normalise_title() uses it) is not satisfied, so no extension may be established and public.clear_routes_unaccent(text) must not be created.';
+END
+$d8_r1_blocker$;

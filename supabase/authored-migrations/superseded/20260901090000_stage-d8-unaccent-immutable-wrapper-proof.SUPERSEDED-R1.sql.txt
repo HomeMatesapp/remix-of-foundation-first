@@ -1,0 +1,277 @@
+-- SUPERSEDED / HISTORICAL EVIDENCE ONLY — DO NOT APPLY, DO NOT PROMOTE.
+-- Stage D8 original authored "immutable wrapper proof" source, retained verbatim
+-- below for inspection. It was SUPERSEDED by R1 external inspection, which found
+-- (1) a false claim that unaccent(regdictionary, text) is IMMUTABLE upstream —
+-- both overloads are declared STABLE — and (2) circular proof logic in the
+-- stored-generated-column scratch check. The current artifact is
+-- 20260901090000_stage-d8-unaccent-mechanism-blocker.sql, which fails closed.
+-- This file carries a .sql.txt extension so it cannot be promoted accidentally.
+
+-- CLEAR ROUTES — INCREMENT 17 / STAGE D8
+-- Diacritic-removal MECHANISM PROOF. AUTHORED SOURCE ONLY — NOT APPLIED.
+--
+-- This file is authored source held outside the applied migration directory on
+-- purpose. It is the intended ELEVENTH migration in repository order (after the
+-- nine applied migrations and the Stage D7 authored-not-applied source). It has
+-- NOT been applied to any database, the approved extension has NOT been
+-- installed anywhere, and nothing below asserts anything about the present
+-- state of any target project. Application is a separate, explicit owner
+-- hosted-DB gate.
+--
+-- OWNER APPROVAL: `unaccent` is the approved accent-removal dependency
+-- DIRECTION, on the explicit condition that a deterministic immutable wrapper
+-- is designed and proven BEFORE it is used by normalise_title(). This file is
+-- that design and that proof. It is not an installation authorisation.
+--
+-- SCOPE
+--   1. establish the approved accent-removal extension in the existing
+--      `extensions` schema convention, verifying its host schema fails closed;
+--   2. freeze the accent dictionary identity and verify it is the dictionary
+--      owned by the approved extension, using the expected accent template;
+--   3. create ONE narrow wrapper, public.clear_routes_unaccent(text), whose
+--      entire behaviour is accent stripping;
+--   4. prove the immutability claim with server-enforced evidence, not with a
+--      keyword: a stored generated column defined over the wrapper, which the
+--      server accepts only for a genuinely immutable expression;
+--   5. prove the wrapper does NOT lowercase, does NOT remove punctuation and
+--      does NOT collapse or trim whitespace.
+--
+-- DELIBERATELY NOT IN SCOPE
+--   normalise_title() is NOT implemented here. Its accepted operation order
+--   remains exactly: lowercase, remove punctuation, remove diacritics, collapse
+--   whitespace, with no morphology of any kind. No occupation, programme,
+--   opportunity or local_snapshot_item object is authored here, and no
+--   generated occupation column exists yet. No participant data, no postcode of
+--   any kind, no participant location, no data migration, no PostGIS change, no
+--   row level security change to any existing table, no external API, no AI,
+--   no singularisation, no stemming, no lemmatisation, no morphology and no
+--   invented character or transliteration mapping.
+--
+-- VOLATILITY REASONING (the substance of the proof)
+--   The convenient one-argument form unaccent(text) is declared STABLE upstream
+--   because it resolves the accent dictionary through the caller's ambient
+--   resolution path at call time. Wrapping a path-dependent STABLE call and
+--   re-declaring the wrapper IMMUTABLE would be a false claim, so this design
+--   NEVER calls it.
+--   The two-argument form unaccent(regdictionary, text) takes the dictionary as
+--   an explicit argument and is declared IMMUTABLE upstream. The wrapper pins
+--   that argument to the schema-qualified literal
+--   'extensions.unaccent'::regdictionary, so dictionary selection cannot vary
+--   with the caller's resolution path, role or session, and the wrapper itself
+--   carries SET search_path = pg_catalog so it never depends on a mutable path.
+--   RESIDUAL RISK, STATED NOT HIDDEN: the dictionary's rule content is external
+--   server-side data. Replacing that content, or redefining the dictionary,
+--   would change past results and would silently invalidate any stored
+--   generated column derived from it. That is governed, not assumed away: the
+--   identity is frozen in one place, verified here, and any redefinition or
+--   relocation is a governed change requiring re-proof before dependent stored
+--   columns may continue to be trusted.
+--
+-- FAIL-CLOSED AUTHORING: every step verifies its own outcome and raises a
+-- MIGRATION BLOCKER exception on failure, aborting the whole migration. An
+-- absence gate refuses to run at all if the wrapper already exists in an
+-- unknown shape, so all DDL below is direct CREATE — no IF NOT EXISTS
+-- adoption, no CREATE OR REPLACE, no DROP-and-recreate of anything reviewed.
+
+-- =====================================================================
+-- 0. Fail-closed preconditions and absence gate
+-- =====================================================================
+
+DO $d8_preconditions$
+BEGIN
+  IF to_regnamespace('extensions') IS NULL THEN
+    RAISE EXCEPTION 'MIGRATION BLOCKER: the extensions schema convention is absent';
+  END IF;
+
+  -- Absence gate: this stage creates a FRESH wrapper. It never adopts an
+  -- existing function of unknown shape.
+  IF to_regprocedure('public.clear_routes_unaccent(text)') IS NOT NULL THEN
+    RAISE EXCEPTION 'MIGRATION BLOCKER: public.clear_routes_unaccent(text) already exists; refusing to adopt an object of unknown shape';
+  END IF;
+END
+$d8_preconditions$;
+
+-- =====================================================================
+-- 1. Establish the approved accent-removal extension in the extensions schema
+-- =====================================================================
+
+DO $d8_extension_gate$
+DECLARE
+  v_available text;
+  v_installed text;
+  v_schema text;
+BEGIN
+  SELECT default_version, installed_version INTO v_available, v_installed
+  FROM pg_available_extensions WHERE name = 'unaccent';
+  IF v_available IS NULL THEN
+    RAISE EXCEPTION 'MIGRATION BLOCKER: unaccent unavailable in target project (not available)';
+  END IF;
+
+  IF v_installed IS NULL THEN
+    EXECUTE 'CREATE EXTENSION unaccent WITH SCHEMA extensions';
+  END IF;
+
+  SELECT n.nspname INTO v_schema
+  FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+  WHERE e.extname = 'unaccent';
+
+  IF v_schema IS NULL THEN
+    RAISE EXCEPTION 'MIGRATION BLOCKER: unaccent unavailable in target project (enable failed)';
+  END IF;
+
+  -- Fail closed on an unexpected host schema rather than relying on an
+  -- ambiguous resolution path or silently relocating a reviewed extension.
+  IF v_schema <> 'extensions' THEN
+    RAISE EXCEPTION 'MIGRATION BLOCKER: unaccent is installed in schema %, expected extensions; requires explicit review, not automatic relocation', v_schema;
+  END IF;
+END
+$d8_extension_gate$;
+
+-- =====================================================================
+-- 2. Freeze the dictionary identity and verify it
+--    The wrapper must always use ONE dictionary for the same input, so the
+--    dictionary is verified to exist, to live in the extensions schema, to be
+--    owned by the approved extension, and to use the expected accent template.
+-- =====================================================================
+
+DO $d8_dictionary_gate$
+DECLARE
+  v_dict oid;
+  v_dict_schema text;
+  v_template text;
+  v_template_schema text;
+  v_owned boolean;
+BEGIN
+  SELECT d.oid, n.nspname INTO v_dict, v_dict_schema
+  FROM pg_ts_dict d JOIN pg_namespace n ON n.oid = d.dictnamespace
+  WHERE d.dictname = 'unaccent' AND n.nspname = 'extensions';
+
+  IF v_dict IS NULL THEN
+    RAISE EXCEPTION 'MIGRATION BLOCKER: text search dictionary extensions.unaccent is absent; the wrapper cannot freeze a dictionary identity';
+  END IF;
+
+  -- The frozen literal must resolve to exactly the dictionary verified above.
+  IF ('extensions.unaccent'::regdictionary)::oid <> v_dict THEN
+    RAISE EXCEPTION 'MIGRATION BLOCKER: the frozen dictionary literal does not resolve to the verified extensions.unaccent dictionary';
+  END IF;
+
+  SELECT t.tmplname, tn.nspname INTO v_template, v_template_schema
+  FROM pg_ts_dict d
+  JOIN pg_ts_template t ON t.oid = d.dicttemplate
+  JOIN pg_namespace tn ON tn.oid = t.tmplnamespace
+  WHERE d.oid = v_dict;
+
+  IF v_template IS DISTINCT FROM 'unaccent' OR v_template_schema IS DISTINCT FROM 'extensions' THEN
+    RAISE EXCEPTION 'MIGRATION BLOCKER: extensions.unaccent dictionary uses unexpected template %.%', v_template_schema, v_template;
+  END IF;
+
+  SELECT EXISTS (
+    SELECT 1 FROM pg_depend dep
+    JOIN pg_extension e ON e.oid = dep.refobjid
+    WHERE dep.classid = 'pg_ts_dict'::regclass
+      AND dep.objid = v_dict
+      AND dep.refclassid = 'pg_extension'::regclass
+      AND e.extname = 'unaccent'
+  ) INTO v_owned;
+
+  IF NOT v_owned THEN
+    RAISE EXCEPTION 'MIGRATION BLOCKER: extensions.unaccent dictionary is not the dictionary owned by the approved unaccent extension';
+  END IF;
+END
+$d8_dictionary_gate$;
+
+-- =====================================================================
+-- 3. The ONE narrow wrapper: input text -> accent-stripped text, nothing else
+--
+--    * two-argument, dictionary-explicit underlying call (IMMUTABLE upstream);
+--    * dictionary frozen as a schema-qualified regdictionary literal, so the
+--      same input can never be routed to a different dictionary;
+--    * SET search_path = pg_catalog so the body never depends on a mutable
+--      resolution path (this is a function-local setting, NOT a role, database
+--      or session-wide path change);
+--    * STRICT so a null input is a null result without entering the body;
+--    * PARALLEL SAFE because the body reads no database state.
+--
+--    It deliberately does NOT lowercase, remove punctuation, collapse
+--    whitespace, or perform any morphology. Those steps belong to the future
+--    normalise_title(), which this stage does not author.
+-- =====================================================================
+
+CREATE FUNCTION public.clear_routes_unaccent(p_value text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+STRICT
+PARALLEL SAFE
+SET search_path = pg_catalog
+AS $clear_routes_unaccent$
+  SELECT extensions.unaccent('extensions.unaccent'::regdictionary, p_value)
+$clear_routes_unaccent$;
+
+COMMENT ON FUNCTION public.clear_routes_unaccent(text) IS
+  'Clear Routes accent-removal wrapper. Removes diacritics ONLY, exactly as the frozen extensions.unaccent dictionary defines. Never lowercases, never removes punctuation, never collapses whitespace and performs no morphology. The dictionary identity is frozen in the body: redefining, replacing or relocating that dictionary is a governed change that invalidates dependent stored generated columns until re-proved.';
+
+-- =====================================================================
+-- 4. Behaviour proof and server-enforced immutability proof
+-- =====================================================================
+
+DO $d8_wrapper_proof$
+DECLARE
+  v_accents text;
+  v_case_preserved text;
+  v_generated text;
+BEGIN
+  -- 4a. accent stripping actually happens
+  v_accents := public.clear_routes_unaccent('Ångström Ébéniste Ćurić Ñuñez');
+  IF v_accents <> 'Angstrom Ebeniste Curic Nunez' THEN
+    RAISE EXCEPTION 'MIGRATION BLOCKER: accent-removal verification failed (got %)', v_accents;
+  END IF;
+
+  -- 4b. the contract is NARROW: case, punctuation and whitespace are untouched
+  v_case_preserved := public.clear_routes_unaccent('  Crème   BRÛLÉE, Ltd.  ');
+  IF v_case_preserved <> '  Creme   BRULEE, Ltd.  ' THEN
+    RAISE EXCEPTION 'MIGRATION BLOCKER: wrapper is wider than accent stripping (got %)', v_case_preserved;
+  END IF;
+
+  -- 4c. null in, null out, without entering the body
+  IF public.clear_routes_unaccent(NULL) IS NOT NULL THEN
+    RAISE EXCEPTION 'MIGRATION BLOCKER: wrapper is not strict on null input';
+  END IF;
+
+  -- 4d. SERVER-ENFORCED immutability evidence. A stored generated column only
+  --     accepts a genuinely immutable expression, so a successful build here is
+  --     the database server agreeing with the IMMUTABLE declaration.
+  BEGIN
+    EXECUTE $scratch$
+      CREATE TABLE public._d8_wrapper_scratch (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        title text NOT NULL,
+        title_accent_free text GENERATED ALWAYS AS (public.clear_routes_unaccent(title)) STORED
+      )
+    $scratch$;
+  EXCEPTION WHEN others THEN
+    RAISE EXCEPTION 'MIGRATION BLOCKER: the wrapper was rejected in a stored generated column, so the immutability claim is not proven (sqlstate=%, message=%)', SQLSTATE, SQLERRM;
+  END;
+
+  EXECUTE $ins$ INSERT INTO public._d8_wrapper_scratch (title) VALUES ('Électricien Sénior') $ins$;
+  EXECUTE $sel$ SELECT title_accent_free FROM public._d8_wrapper_scratch LIMIT 1 $sel$ INTO v_generated;
+
+  IF v_generated IS DISTINCT FROM 'Electricien Senior' THEN
+    EXECUTE 'DROP TABLE public._d8_wrapper_scratch';
+    RAISE EXCEPTION 'MIGRATION BLOCKER: generated-column derivation verification failed (got %)', v_generated;
+  END IF;
+
+  EXECUTE 'DROP TABLE public._d8_wrapper_scratch';
+END
+$d8_wrapper_proof$;
+
+-- =====================================================================
+-- 5. What this file deliberately does NOT do
+--    * it does not author normalise_title();
+--    * it does not author occupation, programme, opportunity or
+--      local_snapshot_item, and adds no generated column to any real table;
+--    * it does not seed any governed vocabulary;
+--    * it does not change any existing table, policy, privilege or role;
+--    * it does not modify any role, database or session resolution path;
+--    * it does not touch participant data, postcodes or participant location.
+-- =====================================================================
